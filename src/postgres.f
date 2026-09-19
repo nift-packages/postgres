@@ -1,9 +1,9 @@
 /*
-PostgreSQL database package for Nift. v0.1.0 backend: the psql executable.
-Public API: the exported `postgres` struct. Helpers stay private.
-Live-server semantics are verified against a reachable PostgreSQL; without
-a configured server this package still supports discovery, argv building,
-structured failures and private/export isolation.
+    PostgreSQL database package for Nift. v0.1.0 backend: the psql executable.
+    Public API: the exported `postgres` struct. Helpers stay private.
+    Live-server semantics are verified against a reachable PostgreSQL; without
+    a configured server this package still supports discovery, argv building,
+    structured failures and private/export isolation.
 */
 
 fn(postgres_available()) { return which("psql") != null }
