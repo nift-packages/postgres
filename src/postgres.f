@@ -24,17 +24,59 @@ fn(postgres_literal(value)) {
 }
 
 fn(postgres_bind(sql, params)) {
-    bound := sql
-    i := 1
-    for(p : params) {
-        literal := postgres_literal(p)
-        if(literal == null) { return null }
-        bound = bound.replace("$" + i.to_string(), literal)
-        i++
+    bound := ""
+    i := 0
+    len := sql.length()
+    state := 0
+    while(i < len) {
+        c := sql.substr(i, 1)
+        n := ""
+        if(i + 1 < len) { n = sql.substr(i + 1, 1) }
+        if(state == 0) {
+            if(c == "'") { bound += c; state = 1 }
+            else if(c == "\"") { bound += c; state = 2 }
+            else if(c == "-" && n == "-") { bound += "--"; i += 1; state = 3 }
+            else if(c == "/" && n == "*") { bound += "/*"; i += 1; state = 4 }
+            else if(c == "$") {
+                j := i + 1
+                digits := ""
+                while(j < len) {
+                    d := sql.substr(j, 1)
+                    if(d == "0" || d == "1" || d == "2" || d == "3" || d == "4" || d == "5" || d == "6" || d == "7" || d == "8" || d == "9") { digits += d; j += 1 }
+                    else { break }
+                }
+                if(digits == "") { bound += "$" }
+                else {
+                    num := digits.to_int()
+                    if(num >= 1 && num <= params.size()) {
+                        literal := postgres_literal(params[num - 1])
+                        if(literal == null) { return null }
+                        bound += literal
+                    } else {
+                        bound += "$" + digits
+                    }
+                    i = j - 1
+                }
+            }
+            else { bound += c }
+        }
+        else if(state == 1) {
+            bound += c
+            if(c == "'") {
+                if(n == "'") { bound += n; i += 1 }
+                else { state = 0 }
+            }
+        }
+        else if(state == 2) { bound += c; if(c == "\"") { state = 0 } }
+        else if(state == 3) { bound += c; if(c == "\n") { state = 0 } }
+        else if(state == 4) {
+            bound += c
+            if(c == "*" && n == "/") { bound += n; i += 1; state = 0 }
+        }
+        i += 1
     }
     return bound
 }
-
 fn(postgres_conn_string(desc)) {
     if(desc == null) { return "" }
     host := desc.get("host", "localhost")
@@ -95,12 +137,12 @@ fn(postgres_cli_query(db, sql, params)) {
 }
 
 fn(postgres_cli_transaction(db, statements)) {
-    i := 0
-    while(i < statements.size()) {
-        e := postgres_cli_exec(db, statements[i], [])
-        if(!e.ok) { return {"ok":false,"error":e.error,"exit_code":e.exit_code} }
-        i++
-    }
+    sql := "BEGIN;"
+    for(statement : statements) { sql += statement + ";" }
+    sql += "COMMIT;"
+    if(!postgres_available()) { return {"ok":false,"error":"psql executable not found","exit_code":127} }
+    result := run("psql", db.conn, "-q", "-v", "ON_ERROR_STOP=1", "-c", sql)
+    if(result.exit_code != 0) { return {"ok":false,"error":result.stderr,"exit_code":result.exit_code} }
     return {"ok":true,"error":"","exit_code":0}
 }
 

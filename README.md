@@ -63,6 +63,19 @@ the package into `psql` literals:
 rows := postgres.query(db, "SELECT * FROM posts WHERE views > $1", 10)
 ```
 
+SQL parameters use PostgreSQL's positional `$1, $2, ...` placeholders, bound by the package into `psql` literals:
+
+```text
+rows := postgres.query(db, "SELECT * FROM posts WHERE views > $1", 10)
+```
+
+Binding is conservative textual substitution, **not** a database prepared
+statement: `$n` placeholders are only replaced outside string literals, quoted
+identifiers and comments, and a `$1` can never alter a `$10` (the full digit run
+is matched). Placeholders inside literals/comments are left untouched. Use the
+placeholder form only for scalar values you intend to bind; it is not a general
+SQL-injection boundary for dynamically constructed SQL.
+
 ## Result shape
 
 All operations return `{ok, error, exit_code}`; `query` also returns `rows` and
