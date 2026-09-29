@@ -6,15 +6,8 @@
     structured failures and private/export isolation.
 */
 
-fn(postgres_available()) { return which("psql") != null }
-
-fn(postgres_version_text()) {
-    r := run("psql", "--version")
-    if(r.exit_code != 0) { return "" }
-    return r.stdout.trim()
-}
-
-fn(postgres_literal(value)) {
+struct(postgres) {
+private fn(literal(value)) {
     t := type(value)
     if(t == "null") { return "NULL" }
     if(t == "bool") { if(value) { return "true" } return "false" }
@@ -23,7 +16,7 @@ fn(postgres_literal(value)) {
     return null
 }
 
-fn(postgres_bind(sql, params)) {
+private fn(bind(sql, params)) {
     bound := ""
     i := 0
     len := sql.length()
@@ -49,9 +42,9 @@ fn(postgres_bind(sql, params)) {
                 else {
                     num := digits.to_int()
                     if(num >= 1 && num <= params.size()) {
-                        literal := postgres_literal(params[num - 1])
-                        if(literal == null) { return null }
-                        bound += literal
+                        value_literal := this.literal(params[num - 1])
+                        if(value_literal == null) { return null }
+                        bound += value_literal
                     } else {
                         bound += "$" + digits
                     }
@@ -77,30 +70,15 @@ fn(postgres_bind(sql, params)) {
     }
     return bound
 }
-fn(postgres_conn_string(desc)) {
-    if(desc == null) { return "" }
-    host := desc.get("host", "localhost")
-    port := desc.get("port", 5432)
-    database := desc.get("database", "")
-    user := desc.get("user", "")
-    conn := "host=" + host + " port=" + port.to_string()
-    if(database != "") { conn += " dbname=" + database }
-    if(user != "") { conn += " user=" + user }
-    return conn
-}
 
-fn(postgres_open_desc(desc)) {
-    return {"conn": postgres_conn_string(desc)}
-}
-
-fn(postgres_cli_exec(db, sql, params)) {
-    bound := postgres_bind(sql, params)
+private fn(cli_exec(db, sql, params)) {
+    bound := this.bind(sql, params)
     if(bound == null) { return {"ok":false,"rows":[],"columns":[],"error":"parameter count/type mismatch","exit_code":2} }
     result := run("psql", db.conn, "-q", "-c", bound)
     return {"ok":result.exit_code == 0,"rows":[],"columns":[],"error":result.stderr,"exit_code":result.exit_code}
 }
 
-fn(postgres_parse_rows(text)) {
+private fn(parse_rows(text)) {
     columns := []
     rows := []
     lines := text.split("\n")
@@ -127,33 +105,55 @@ fn(postgres_parse_rows(text)) {
     return {"columns": columns, "rows": rows}
 }
 
-fn(postgres_cli_query(db, sql, params)) {
-    bound := postgres_bind(sql, params)
+private fn(cli_query(db, sql, params)) {
+    bound := this.bind(sql, params)
     if(bound == null) { return {"ok":false,"rows":[],"columns":[],"error":"parameter count/type mismatch","exit_code":2} }
     result := run("psql", db.conn, "-q", "-A", "-F", "\t", "-c", bound)
     if(result.exit_code != 0) { return {"ok":false,"rows":[],"columns":[],"error":result.stderr,"exit_code":result.exit_code} }
-    parsed := postgres_parse_rows(result.stdout)
+    parsed := this.parse_rows(result.stdout)
     return {"ok":true,"rows":parsed.rows,"columns":parsed.columns,"error":"","exit_code":0}
 }
 
-fn(postgres_cli_transaction(db, statements)) {
+fn(available()) { return which("psql") != null }
+
+fn(version()) {
+    r := run("psql", "--version")
+    if(r.exit_code != 0) { return "" }
+    return r.stdout.trim()
+}
+
+fn(open(desc)) {
+    if(desc == null) { return {"conn":""} }
+    host := desc.get("host", "localhost")
+    port := desc.get("port", 5432)
+    database := desc.get("database", "")
+    user := desc.get("user", "")
+    conn := "host=" + host + " port=" + port.to_string()
+    if(database != "") { conn += " dbname=" + database }
+    if(user != "") { conn += " user=" + user }
+    return {"conn":conn}
+}
+
+fn(exec(db, sql, ...params)) {
+    if(!this.available()) { return {"ok":false,"rows":[],"columns":[],"error":"psql executable not found","exit_code":127} }
+    return this.cli_exec(db, sql, params)
+}
+
+fn(query(db, sql, ...params)) {
+    if(!this.available()) { return {"ok":false,"rows":[],"columns":[],"error":"psql executable not found","exit_code":127} }
+    return this.cli_query(db, sql, params)
+}
+
+fn(transaction(db, statements)) {
+    if(!this.available()) { return {"ok":false,"error":"psql executable not found","exit_code":127} }
     sql := "BEGIN;"
     for(statement : statements) { sql += statement + ";" }
     sql += "COMMIT;"
-    if(!postgres_available()) { return {"ok":false,"error":"psql executable not found","exit_code":127} }
     result := run("psql", db.conn, "-q", "-v", "ON_ERROR_STOP=1", "-c", sql)
     if(result.exit_code != 0) { return {"ok":false,"error":result.stderr,"exit_code":result.exit_code} }
     return {"ok":true,"error":"","exit_code":0}
 }
-
-@struct(postgres_api) {
-    available := () => postgres_available()
-    version := () => postgres_version_text()
-    open := (desc) => postgres_open_desc(desc)
-    exec := (db, sql, ...params) => { if(!postgres_available()) { return {"ok":false,"rows":[],"columns":[],"error":"psql executable not found","exit_code":127} }; return postgres_cli_exec(db, sql, params) }
-    query := (db, sql, ...params) => { if(!postgres_available()) { return {"ok":false,"rows":[],"columns":[],"error":"psql executable not found","exit_code":127} }; return postgres_cli_query(db, sql, params) }
-    transaction := (db, statements) => { if(!postgres_available()) { return {"ok":false,"error":"psql executable not found","exit_code":127} }; return postgres_cli_transaction(db, statements) }
 }
 
-postgres := postgres_api()
+postgres := postgres()
 export(postgres)
