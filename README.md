@@ -3,9 +3,7 @@
 PostgreSQL database package for Nift.
 
 Runtime dependency: the `psql` executable on `PATH`. The package drives `psql`
-through Nift's structured process API (argv, never shell concatenation). The
-v0.1.0 backend may change later without requiring consumers to rewrite around
-it.
+through Nift's structured process API (argv, never shell concatenation).
 
 ## Installation
 
@@ -21,20 +19,20 @@ nift add nift-packages/postgres
 
 ## API
 
-The exported `postgres` struct:
-
 ```text
-postgres.available()                 // bool: psql on PATH
-postgres.version()                   // psql --version first line
+postgres.available()                 // bool: psql on PATH and process execution enabled
+postgres.version()                   // psql --version first line, or "" when unavailable
 db := postgres.open({...})           // connection descriptor
-postgres.exec(db, sql, ...params)    // {ok, error, exit_code}
-rows := postgres.query(db, sql, ...params)   // {ok, rows, columns, error, exit_code}
-postgres.transaction(db, statements) // {ok, error, exit_code}
+postgres.exec(db, sql, ...params)    // {ok, rows, columns, error, error_code, exit_code}
+rows := postgres.query(db, sql, ...params)   // {ok, rows, columns, error, error_code, exit_code}
+postgres.transaction(db, statements) // {ok, error, error_code, exit_code}
 ```
 
-`open` accepts `host`, `port`, `database`, `user`. A `password` is deliberately
-not accepted: set `PGPASSWORD` in the environment instead (the package never
-logs credentials).
+`open` accepts `host`, `port`, `database`, `user`. These are passed to `psql` as
+separate `-h`/`-p`/`-d`/`-U` options, so a value containing spaces cannot inject
+additional libpq connection keywords. A `password` is deliberately not accepted:
+set `PGPASSWORD` in the environment instead (the package never logs
+credentials).
 
 ```text
 @import("postgres")
@@ -56,30 +54,44 @@ for (row : rows.rows) {
 of names) and `rows` (array of objects). The v0.1.0 parser uses tab-separated
 output; values containing tabs are a documented limitation.
 
-SQL parameters use PostgreSQL's positional `$1, $2, ...` placeholders, bound by
-the package into `psql` literals:
+## Parameter binding
+
+SQL parameters use PostgreSQL's positional `$1, $2, ...` placeholders. Binding
+is **structural**, not quote-escaping:
+
+- Strings are emitted as a hex bytea decoded to UTF-8
+  (`convert_from(decode('..','hex'),'UTF8')`). String parameters are interpreted
+  as Nift's UTF-8 bytes. This is independent of the server's
+  `standard_conforming_strings` setting, and quotes, backslashes, newlines, tabs
+  and Unicode are preserved byte-exactly.
+- `null`, booleans and integer/float values are emitted as `NULL`, `true`/`false`
+  and validated numeric literals.
+- Array, object and other non-scalar parameters are rejected with
+  `error_code: "invalid_parameters"`.
 
 ```text
 rows := postgres.query(db, "SELECT * FROM posts WHERE views > $1", 10)
 ```
 
-SQL parameters use PostgreSQL's positional `$1, $2, ...` placeholders, bound by the package into `psql` literals:
-
-```text
-rows := postgres.query(db, "SELECT * FROM posts WHERE views > $1", 10)
-```
-
-Binding is conservative textual substitution, **not** a database prepared
-statement: `$n` placeholders are only replaced outside string literals, quoted
-identifiers and comments, and a `$1` can never alter a `$10` (the full digit run
-is matched). Placeholders inside literals/comments are left untouched. Use the
-placeholder form only for scalar values you intend to bind; it is not a general
-SQL-injection boundary for dynamically constructed SQL.
+Placeholders are substituted only outside string literals (including
+dollar-quoted `$tag$...$tag$` and `$$...$$` strings), quoted identifiers and
+comments, and `$1` can never alter `$10`. This is still textual substitution,
+**not** a database prepared statement: never assemble dynamic SQL from untrusted
+fragments, bind scalar values only.
 
 ## Result shape
 
-All operations return `{ok, error, exit_code}`; `query` also returns `rows` and
-`columns`. `exit_code` is `127` when `psql` is missing.
+All operations return `{ok, error, error_code, exit_code}`; `query` also returns
+`rows` and `columns`. `error_code` is `""` on a completed call,
+`"invalid_parameters"` for a rejected parameter type, and `"backend_unavailable"`
+when `psql` is missing or process execution is disabled. `exit_code` is `127` in
+the unavailable case.
+
+## Availability
+
+`available()` is false when `psql` is missing or Nift runs with `--no-process`
+(`NIFT_NO_PROCESS`). Operations then return a recoverable `backend_unavailable`
+result without invoking the client.
 
 ## Limitations (v0.1.0)
 
@@ -88,5 +100,17 @@ All operations return `{ok, error, exit_code}`; `query` also returns `rows` and
   and structured failures.
 - Tab-separated result parsing: fields containing tabs are not representable.
 - No password field; use `PGPASSWORD`.
+- PostgreSQL text cannot contain NUL; a bound string containing NUL is passed
+  through the structural form and is rejected by the server.
+- `transaction()` takes raw SQL statements and performs no parameter binding;
+  callers own any escaping for that operation.
+
+## Tests
+
+The deterministic suite uses a fake `psql` executable and needs no server:
+
+```sh
+python3 -B tests/test_postgres.py /path/to/nift
+```
 
 Version: 0.1.0
